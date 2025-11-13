@@ -10,3 +10,6 @@
 
 
 [![Requires BTD6 Mod Helper](https://raw.githubusercontent.com/gurrenm3/BTD-Mod-Helper/master/banner.png)](https://github.com/gurrenm3/BTD-Mod-Helper#readme)
+
+<img align="center" src="https://i.postimg.cc/YCsYTMz7/Screenshot-2025-11-13-160248.png">
+<img align="center" src="https://i.postimg.cc/8zJjJWLD/Screenshot-2025-11-13-160325.png">
