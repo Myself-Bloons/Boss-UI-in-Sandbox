@@ -2,11 +2,13 @@ using System;
 using MelonLoader;
 using BTD_Mod_Helper;
 using BTD_Mod_Helper.Extensions;
+using Il2Cpp;
 using Il2CppAssets.Scripts.Models;
+using Il2CppAssets.Scripts.Models.Bloons;
 using Il2CppAssets.Scripts.Models.Difficulty;
 using Il2CppAssets.Scripts.Simulation.Bloons;
-using Il2CppAssets.Scripts.Simulation.Track;
 using Il2CppAssets.Scripts.Unity;
+using Il2CppAssets.Scripts.Unity.Audio;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame.Races;
@@ -27,17 +29,8 @@ public class Main : BloonsTD6Mod
     internal BossType? currentBossType;
     internal bool isElite;
     internal Bloon? currentBoss;
-    private BossUI? gameBossUI;
-
-    internal static System.Reflection.FieldInfo? _spawnerField;
-    internal static System.Reflection.FieldInfo? _currentBossTierField;
-    internal static readonly System.Reflection.BindingFlags _allInstanceFlags =
-        System.Reflection.BindingFlags.Public |
-        System.Reflection.BindingFlags.NonPublic |
-        System.Reflection.BindingFlags.Instance;
-    internal static readonly System.Reflection.BindingFlags _privateInstanceFlags =
-        System.Reflection.BindingFlags.NonPublic |
-        System.Reflection.BindingFlags.Instance;
+    internal BossUI? gameBossUI;
+    internal int currentBossTier = 1;
 
     internal const string BossUiName = "BossUI";
     internal const string BossWaitContainer = "AnimatedContainerBossWait";
@@ -46,56 +39,7 @@ public class Main : BloonsTD6Mod
     public override void OnApplicationStart()
     {
         Instance = this;
-        ModHelper.Msg<Main>("Bosses in Sandbox Loaded.");
-    }
-
-    internal static Spawner GetSpawnerFromSimulation(Il2CppAssets.Scripts.Simulation.Simulation simulation)
-    {
-        _spawnerField ??= typeof(Il2CppAssets.Scripts.Simulation.Simulation).GetField("spawner", _allInstanceFlags);
-        return _spawnerField?.GetValue(simulation) as Spawner;
-    }
-
-    internal static void SetCurrentBossTier(BossBloonManager bossManager, int tier)
-    {
-        _currentBossTierField ??= typeof(BossBloonManager).GetField("currentBossTier", _privateInstanceFlags);
-        _currentBossTierField?.SetValue(bossManager, tier);
-    }
-
-    private void DestroyExistingBossUI()
-    {
-        if (gameBossUI == null) return;
-
-        if (gameBossUI.bossAnim != null)
-        {
-            gameBossUI.bossAnim.SetInteger(AnimatorState, 0);
-        }
-        if (gameBossUI.noBossAnim != null)
-        {
-            gameBossUI.noBossAnim.SetInteger(AnimatorState, 0);
-        }
-
-        if (gameBossUI.gameObject != null)
-        {
-            gameBossUI.gameObject.SetActive(false);
-            UnityEngine.Object.DestroyImmediate(gameBossUI.gameObject);
-        }
-
-        gameBossUI = null;
-    }
-
-    private void ConfigureBossStars(BossUI bossUI, int tier)
-    {
-        if (bossUI?.stars == null) return;
-
-        int maxStars = Math.Min(bossUI.stars.Length, 5);
-
-        for (int i = 0; i < maxStars; i++)
-        {
-            if (bossUI.stars[i]?.gameObject == null) continue;
-
-            bossUI.stars[i].gameObject.SetActive(true);
-            bossUI.stars[i].color = (i < tier) ? bossUI.starColorOn : bossUI.starColorOff;
-        }
+        ModHelper.Msg<Main>("BossUi in Sandbox Loaded.");
     }
 
     public override void OnMatchStart()
@@ -120,43 +64,6 @@ public class Main : BloonsTD6Mod
         if (currentBoss == null || currentBoss.IsDestroyed || currentBoss.bloonModel == null || currentBoss.health <= 0)
         {
             CleanupBossUI();
-        }
-    }
-
-    private void CleanupBossUI()
-    {
-        var editableData = InGameData.Editable;
-        if (editableData != null &&
-            (editableData.gameType == GameType.BossBloon ||
-             editableData.gameType == GameType.BossRush ||
-             editableData.gameType == GameType.ContestedTerritory ||
-             !string.IsNullOrEmpty(editableData.gameEventId)))
-        {
-            SandboxBossActive = false;
-            currentBoss = null;
-            currentBossType = null;
-            isElite = false;
-            return;
-        }
-
-        if (!SandboxBossActive && currentBoss == null && currentBossType == null) return;
-
-        SandboxBossActive = false;
-        currentBoss = null;
-        currentBossType = null;
-        isElite = false;
-
-        DestroyExistingBossUI();
-
-        var editable = InGameData.Editable;
-        if (editable != null)
-        {
-            editable.gameType = GameType.Standard;
-            editable.subGameType = SubGameType.NotSet;
-            editable.bossData = null;
-            editable.dcModel = null;
-            editable.gameEventId = null;
-            editable.CreateReadonlyCopyForGame();
         }
     }
 
@@ -186,23 +93,8 @@ public class Main : BloonsTD6Mod
         if (currentBossType.HasValue)
         {
             currentBoss = bloon;
-            int tier = ExtractTierFromName(model.name);
-
-            // Leaj damage for testing and seeing leaks (might adjust to find real values and in game method later)
-            if (model.leakDamage <= 0)
-            {
-                model.leakDamage = tier switch
-                {
-                    1 => 200f,
-                    2 => 1000f,
-                    3 => 7500f,
-                    4 => 60000f,
-                    5 => 450000f,
-                    _ => 200f
-                };
-            }
-
-            SetBossManagerTier(tier);
+            currentBossTier = ExtractTierFromName(model.name ?? model.id);
+            SetupLeakDamage(model);
             SetupBossModeAndActivateUI();
         }
     }
@@ -216,9 +108,9 @@ public class Main : BloonsTD6Mod
             _ when baseId.Contains("Bloonarius") => BossType.Bloonarius,
             _ when baseId.Contains("Lych") => BossType.Lych,
             _ when baseId.Contains("Vortex") => BossType.Vortex,
-            _ when baseId.Contains("Dreadbloon") || baseId.Contains("Dread") => BossType.Dreadbloon,
+            _ when baseId.Contains("Dreadbloon") => BossType.Dreadbloon,
             _ when baseId.Contains("Phayze") => BossType.Phayze,
-            _ when baseId.Contains("Blasta") => BossType.Blastapopoulos,
+            _ when baseId.Contains("Blastapopoulos") => BossType.Blastapopoulos,
             _ => null
         };
     }
@@ -230,14 +122,16 @@ public class Main : BloonsTD6Mod
         return char.IsDigit(lastChar) ? lastChar - '0' : 1;
     }
 
-    private void SetBossManagerTier(int tier)
+    private void SetupLeakDamage(BloonModel model)
     {
-        var simulation = InGame.instance.bridge.simulation;
-        var spawner = GetSpawnerFromSimulation(simulation);
-
-        if (spawner?.bossBloonManager != null)
+        if (model.leakDamage <= 0 && currentBossType.HasValue)
         {
-            SetCurrentBossTier(spawner.bossBloonManager, tier);
+            model.leakDamage = BossLeakDamageHelper.GetBossLeakDamage(
+                currentBossType.Value,
+                currentBossTier,
+                isElite,
+                model
+            );
         }
     }
 
@@ -251,28 +145,13 @@ public class Main : BloonsTD6Mod
             var inGame = InGame.instance;
             if (inGame != null)
             {
-                SandboxBossActive = true;
                 MelonCoroutines.Start(LoadBossUICoroutine(inGame));
             }
         }
-    }
-
-    private void ApplyBossUISettings(BossUI bossUI)
-    {
-        if (!currentBossType.HasValue || currentBoss == null) return;
-
-        var bossData = GameData.Instance.bosses.GetBossData(currentBossType.Value);
-        if (bossData != null)
+        else
         {
-            var iconRef = isElite ? bossData.eliteHudIcon : bossData.normalHudIcon;
-            if (!string.IsNullOrEmpty(iconRef.guidRef))
-            {
-                bossUI.bossImg.SetSprite(iconRef.guidRef);
-            }
+            SandboxBossActive = true;
         }
-
-        int tier = ExtractTierFromName(currentBoss.bloonModel.name);
-        ConfigureBossStars(bossUI, tier);
     }
 
     private System.Collections.IEnumerator LoadBossUICoroutine(InGame inGame)
@@ -292,6 +171,8 @@ public class Main : BloonsTD6Mod
         {
             gameBossUI.gameObject.SetActive(true);
         }
+
+        SandboxBossActive = true;
 
         bool initializeSucceeded = true;
         var initCoroutine = gameBossUI.Initialise();
@@ -354,22 +235,162 @@ public class Main : BloonsTD6Mod
                 }
             }
 
-            try
-            {
-                gameBossUI.ShowSkulls();
-                gameBossUI.SetupArmourBars();
-                gameBossUI.UpdateArmourUI();
-                gameBossUI.ShowBossAliveUI();
-                gameBossUI.UpdateHealthAndShield();
-            }
-            catch
-            {
-            }
+            gameBossUI.ShowSkulls();
+            gameBossUI.SetupArmourBars();
+            gameBossUI.UpdateArmourUI();
+            gameBossUI.UpdateHealthAndShield();
 
             if (!gameBossUI.gameObject.active)
             {
                 gameBossUI.gameObject.SetActive(true);
             }
         }
+
+        PlayBossMusic();
+    }
+
+    private void ApplyBossUISettings(BossUI bossUI)
+    {
+        if (!currentBossType.HasValue || currentBoss == null) return;
+
+        var bossData = GameData.Instance.bosses.GetBossData(currentBossType.Value);
+        if (bossData != null)
+        {
+            var iconRef = isElite ? bossData.eliteHudIcon : bossData.normalHudIcon;
+            if (!string.IsNullOrEmpty(iconRef.guidRef))
+            {
+                bossUI.bossImg.SetSprite(iconRef.guidRef);
+            }
+        }
+
+        ConfigureBossStars(bossUI, currentBossTier);
+    }
+
+    private void ConfigureBossStars(BossUI bossUI, int tier)
+    {
+        if (bossUI?.stars == null) return;
+
+        int maxStars = Math.Min(bossUI.stars.Length, 5);
+
+        for (int i = 0; i < maxStars; i++)
+        {
+            var star = bossUI.stars[i];
+            if (star?.gameObject == null) continue;
+
+            star.gameObject.SetActive(true);
+            star.color = (i < tier) ? bossUI.starColorOn : bossUI.starColorOff;
+        }
+    }
+
+    private void PlayBossMusic()
+    {
+        if (!currentBossType.HasValue) return;
+
+        try
+        {
+            var audioFactory = Game.instance?.audioFactory;
+            if (audioFactory == null) return;
+
+            var bossData = GameData.Instance.bosses.GetBossData(currentBossType.Value);
+            var bossClip = bossData?.musicTrack?.Clip;
+
+            if (bossClip != null)
+            {
+                audioFactory.StopMusic();
+                audioFactory.PlayMusic(bossClip);
+
+                if (audioFactory.musicFactory != null)
+                {
+                    audioFactory.musicFactory.bossMusicClip = bossClip;
+                    audioFactory.musicFactory.BossMusicIsPlaying = true;
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private void StopBossMusic()
+    {
+        try
+        {
+            var audioFactory = Game.instance?.audioFactory;
+            if (audioFactory != null)
+            {
+                audioFactory.FadeMusic();
+
+                if (audioFactory.musicFactory != null)
+                {
+                    audioFactory.musicFactory.BossMusicIsPlaying = false;
+                    audioFactory.musicFactory.bossMusicClip = null;
+                    audioFactory.musicFactory.StartInGameMusic();
+                }
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private void CleanupBossUI()
+    {
+        var editableData = InGameData.Editable;
+        if (editableData != null &&
+            (editableData.gameType == GameType.BossBloon ||
+             editableData.gameType == GameType.BossRush ||
+             editableData.gameType == GameType.ContestedTerritory ||
+             !string.IsNullOrEmpty(editableData.gameEventId)))
+        {
+            SandboxBossActive = false;
+            currentBoss = null;
+            currentBossType = null;
+            isElite = false;
+            return;
+        }
+
+        if (!SandboxBossActive && currentBoss == null && currentBossType == null) return;
+
+        SandboxBossActive = false;
+        currentBoss = null;
+        currentBossType = null;
+        isElite = false;
+        currentBossTier = 1;
+
+        StopBossMusic();
+        DestroyExistingBossUI();
+
+        var editable = InGameData.Editable;
+        if (editable != null)
+        {
+            editable.gameType = GameType.Standard;
+            editable.subGameType = SubGameType.NotSet;
+            editable.bossData = null;
+            editable.dcModel = null;
+            editable.gameEventId = null;
+            editable.CreateReadonlyCopyForGame();
+        }
+    }
+
+    private void DestroyExistingBossUI()
+    {
+        if (gameBossUI == null) return;
+
+        if (gameBossUI.bossAnim != null)
+        {
+            gameBossUI.bossAnim.SetInteger(AnimatorState, 0);
+        }
+        if (gameBossUI.noBossAnim != null)
+        {
+            gameBossUI.noBossAnim.SetInteger(AnimatorState, 0);
+        }
+
+        if (gameBossUI.gameObject != null)
+        {
+            gameBossUI.gameObject.SetActive(false);
+            UnityEngine.Object.DestroyImmediate(gameBossUI.gameObject);
+        }
+
+        gameBossUI = null;
     }
 }
